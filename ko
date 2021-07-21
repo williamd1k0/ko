@@ -1,1 +1,150 @@
-a
+#!/usr/bin/python
+import sys
+from treelib import Tree
+from rply import LexerGenerator
+
+TOKEN_NAMES = "RIGHT", "LEFT", "ADD", "SUB", "START", "END", "OUT", "IN"
+TK_RIGHT, TK_LEFT, TK_ADD, TK_SUB, TK_START, TK_END, TK_OUT, TK_IN = tuple(range(len(TOKEN_NAMES)))
+SOURCE_SYMBOLS = r'猫の子', r'子猫', r'獅子の子', r'子獅子', r'「', r'」', r'。', r'、'
+COMPILED_SYMBOL = r'子'
+COMPILED_TOKEN = '\u200e'
+TREE_ROOT, TREE_LOOP, TREE_END = "TREE_ROOT", "TREE_LOOP", "TREE_END"
+
+def get_source_tokens(stream):
+    lg = LexerGenerator()
+    for i in range(len(TOKEN_NAMES)):
+        lg.add(TOKEN_NAMES[i], SOURCE_SYMBOLS[i])
+    lg.ignore(r"\s+")
+    lg.ignore(r"\n+")
+    lexer = lg.build()
+    return lexer.lex(stream)
+
+def get_compiled_tokens(stream):
+    tokens = [tk for tk in stream.strip().split(COMPILED_SYMBOL) if tk != ""]
+    stream = ""
+    for tk in tokens:
+        stream += SOURCE_SYMBOLS[len(tk)-1]
+    return get_source_tokens(stream)
+
+def to_compiled(tokens):
+    stream = ""
+    for tk in tokens:
+        stream += "%s%s" % (COMPILED_SYMBOL, COMPILED_TOKEN*(1+TOKEN_NAMES.index(tk.gettokentype())))
+    return stream
+
+def parse_tokens(tokens):
+    tree = Tree()
+    tree.create_node(TREE_ROOT)
+    roots = [tree.root]
+    for token in tokens:
+        tk = token.gettokentype()
+        if tk == TOKEN_NAMES[TK_START]:
+            roots.append(tree.create_node(TREE_LOOP, parent=roots[-1]).identifier)
+        elif tk == TOKEN_NAMES[TK_END]:
+            roots.pop()
+        else:
+            tree.create_node(tk, parent=roots[-1])
+    tree.create_node(TREE_END, parent=roots[0])
+    return tree
+
+class KoRuntime(object):
+    tree = None
+    state = None
+    mem = None
+    pt = 0
+    out = None
+    def __init__(self, tree, mem_size=16):
+        self.tree = tree
+        self.mem = [0 for n in range(mem_size)]
+        self.pt = 0
+        self.out = []
+
+    def run(self):
+        self.state = None
+        break_current_loop = False
+        while self.has_statements():
+            self.next_state(break_current_loop)
+            break_current_loop = self.process_state()
+
+    def has_statements(self):
+        return self.state is None or self.state.tag != TREE_END
+
+    def next_state(self, break_loop=False):
+        if self.state is None:
+            self.state = self.tree.children(self.tree.root)[0]
+        elif not self.state.is_leaf(self.tree.identifier) and not break_loop:
+            self.state = self.tree.children(self.state.identifier)[0]
+        else:
+            parent = self.tree.get_node(self.state.predecessor(self.tree.identifier))
+            siblings = self.tree.children(parent.identifier)
+            index = siblings.index(self.state)
+            if index == len(siblings)-1 and parent.tag == TREE_LOOP:
+                self.state = parent
+            else:
+                self.state = siblings[index+1]
+
+    def process_state(self):
+        break_loop = False
+        if self.state.tag == TOKEN_NAMES[TK_RIGHT]:
+            self.right()
+        elif self.state.tag == TOKEN_NAMES[TK_LEFT]:
+            self.left()
+        elif self.state.tag == TOKEN_NAMES[TK_ADD]:
+            self.add()
+        elif self.state.tag == TOKEN_NAMES[TK_SUB]:
+            self.sub()
+        elif self.state.tag == TREE_LOOP:
+            break_loop = not self.loop()
+        elif self.state.tag == TOKEN_NAMES[TK_OUT]:
+            self.write()
+        elif self.state.tag == TOKEN_NAMES[TK_IN]:
+            self.read()
+        return break_loop
+
+    def right(self):
+        self.pt = (self.pt + 1) % len(self.mem)
+    def left(self):
+        self.pt -= 1
+    def add(self):
+        self.mem[self.pt] += 1
+    def sub(self):
+        self.mem[self.pt] -= 1
+    def write(self):
+        value = self.mem[self.pt]
+        self.out.append(value)
+        print(chr(value), end='')
+    def read(self):
+        self.mem[self.pt] = int(input())
+    def loop(self):
+        return self.mem[self.pt] != 0
+
+def main(args):
+    stream = open(args.input, 'r', encoding='utf-8').read()
+    tokens = None
+    if args.verbose:
+        print("[ko] source:", stream, file=sys.stderr)
+    if COMPILED_TOKEN in stream:
+        tokens = get_compiled_tokens(stream)
+    else:
+        tokens = get_source_tokens(stream)
+    if args.compile:
+        compiled_stream = to_compiled(tokens)
+        with open(args.output, 'w', encoding='utf-8') as f:
+            f.write(compiled_stream)
+    else:
+        tree = parse_tokens(tokens)
+        rt = KoRuntime(tree, args.memory)
+        rt.run()
+        if args.verbose:
+            print("[ko] output dump:", rt.out, file=sys.stderr)
+            print("[ko] mem dump:", rt.mem, file=sys.stderr)
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+    argp = ArgumentParser("ko", description="子子子子子子子子子子子子言語 / Ko Lang")
+    argp.add_argument("input", help="source file path")
+    argp.add_argument("-c", "--compile", action="store_true", help="compile source to 子")
+    argp.add_argument("-o", "--output", default="a.ko", help="compiled output path")
+    argp.add_argument("-m", "--memory", type=int, default=16, help="memory size")
+    argp.add_argument("-v", "--verbose", action="store_true", help="dump output and memory info")
+    main(argp.parse_args())
